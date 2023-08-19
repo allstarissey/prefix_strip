@@ -1,0 +1,10 @@
+[package]
+name = "prefix_strip"
+author = "DraqonFyre <draqonfyre@yahoo.com>"
+version = "0.1.0"
+about = "A simple program to strip common prefixes from files"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
