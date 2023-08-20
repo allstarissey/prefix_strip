@@ -24,8 +24,25 @@ fn main() {
     let args = Args::parse();
 
     let files: Vec<PathBuf> = 'files: {
-        if args.files.is_some() {
-            break 'files Vec::from(args.files.unwrap())
+        if let Some(path_vec) = args.files {
+            let mut files: Vec<PathBuf> = Vec::with_capacity(path_vec.len());
+
+            for path in path_vec {
+                match path.as_path().try_exists() {
+                    Ok(exists) => if exists {
+                        files.push(path)
+                    } else {
+                        eprintln!("File {} does not exist", path.display());
+                        continue;
+                    }
+                    Err(e) => {
+                        eprintln!("Couldn't detect whether {} exists or not: {e}", path.display());
+                        continue;
+                    }
+                }
+            }
+
+            break 'files files;
         }
 
         let dir = args.source_directory.unwrap();
