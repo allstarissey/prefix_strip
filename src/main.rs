@@ -4,6 +4,19 @@ use clap::Parser;
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 
+#[derive(Debug)]
+struct NoFilesRemaining;
+
+impl std::fmt::Display for NoFilesRemaining {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Error: None of the specified files could be affected")?;
+        Ok(())
+    }
+}
+
+impl std::error::Error for NoFilesRemaining {}
+
+
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
 struct Args {
@@ -82,6 +95,10 @@ fn get_paths(args: &Args) -> Result<Vec<PathBuf>> {
         })
         .cloned()
         .collect();
+
+    if final_list.is_empty() {
+        return Err(Box::new(NoFilesRemaining))
+    }
 
     Ok(final_list)
 }
