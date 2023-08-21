@@ -1,6 +1,7 @@
 use std::path::PathBuf;
-
 use clap::Parser;
+
+type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 
 #[derive(Parser)]
@@ -10,7 +11,7 @@ struct Args {
     prefix: Option<String>,
 
     #[arg(short, long, help = "Use all files in specified directory", default_value = "./")]
-    source_directory: Option<PathBuf>,
+    source_directory: PathBuf,
 
     #[arg(last = true, conflicts_with = "source_directory")]
     files: Option<Vec<PathBuf>>,
@@ -23,69 +24,64 @@ struct Args {
 fn main() {
     let args = Args::parse();
 
-    let files: Vec<PathBuf> = 'files: {
-        if let Some(path_vec) = args.files {
-            let mut files: Vec<PathBuf> = Vec::with_capacity(path_vec.len());
+    let paths = match get_paths(&args) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("Error getting files: {e}");
+            return;
+        }
+    };
+}
 
-            for path in path_vec {
-                match path.as_path().try_exists() {
-                    Ok(exists) => if exists {
-                        files.push(path)
-                    } else {
-                        eprintln!("File {} does not exist", path.display());
-                        continue;
-                    }
-                    Err(e) => {
-                        eprintln!("Couldn't detect whether {} exists or not: {e}", path.display());
-                        continue;
-                    }
+fn get_paths(args: &Args) -> Result<Vec<PathBuf>> {
+    let list: Vec<PathBuf>;
+    if let Some(file_list) = &args.files {
+        let mut existing: Vec<PathBuf> = Vec::with_capacity(file_list.len());
+        for file in file_list {
+            match file.as_path().try_exists() {
+                Ok(exists) => if exists {
+                    existing.push(file.clone());
+                } else {
+                    eprintln!("File {} doesn't exist", file.display());
+                }
+                Err(e) => {
+                    eprintln!("Couldn't detect if {} exists: {e}", file.display());
                 }
             }
-
-            break 'files files;
         }
 
-        let dir = args.source_directory.unwrap();
-        let read_dir = match std::fs::read_dir(dir.clone()) {
-            Ok(read_dir) => read_dir,
-            Err(e) => {
-                eprintln!("Couldn't open directory {}: {e}", dir.display());
-                return;
-            }
-        };
+        list = existing;
+    } else {
+        let read_dir = std::fs::read_dir(&args.source_directory)?;
 
         let size_hint = match read_dir.size_hint() {
             (_, Some(upper_bound)) => upper_bound,
             (lower_bound, None) => lower_bound,
         };
-        let mut file_vec: Vec<PathBuf> = Vec::with_capacity(size_hint);
+        let mut paths: Vec<PathBuf> = Vec::with_capacity(size_hint);
 
-        for entry_result in read_dir {
-            let entry = match entry_result {
-                Ok(entry) => entry,
-                Err(e) => {
-                    eprintln!("Failed to read directory entry: {e}");
-                    continue;
-                }
-            };
-
-            if !args.include_directories {
-                let file_type = match entry.file_type() {
-                    Ok(f) => f,
-                    Err(e) => {
-                        eprintln!("Error getting file type: {e}");
-                        continue;
-                    }
-                };
-
-                if !file_type.is_file() {
-                    continue;
-                }
+        for entry in read_dir {
+            if let Err(e) = entry {
+                eprintln!("Error reading directory entry: {e}");
+                continue;
             }
 
-            file_vec.push(entry.path());
+            paths.push(entry.unwrap().path());
         }
 
-        file_vec
-    };
+        list = Vec::from(paths)
+    }
+
+    let final_list: Vec<PathBuf> = list.iter() // I wanna use drain_filter so bad, but the stable branch beckons.
+        .filter(|pathbuf| {
+            if pathbuf.is_dir() && !args.include_directories {
+                return false;
+            }
+
+            true
+        })
+        .cloned()
+        .collect();
+
+    Ok(final_list)
 }
