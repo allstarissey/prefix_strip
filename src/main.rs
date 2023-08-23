@@ -9,8 +9,7 @@ struct NoFilesRemaining;
 
 impl std::fmt::Display for NoFilesRemaining {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Error: None of the specified files could be affected")?;
-        Ok(())
+        write!(f, "Error: None of the specified files could be affected")
     }
 }
 
@@ -26,7 +25,7 @@ struct Args {
     #[arg(short, long, help = "Use all files in specified directory", default_value = "./")]
     source_directory: PathBuf,
 
-    #[arg(last = true, conflicts_with = "source_directory")]
+    #[arg(last = true, conflicts_with = "source_directory", help = "Explicit list of files to be changed, mutually exclusive with -d")]
     files: Option<Vec<PathBuf>>,
 
     #[arg(short = 'd', long, help = "Include directories to be stripped")]
@@ -51,12 +50,9 @@ fn get_paths(args: &Args) -> Result<Vec<PathBuf>> {
     if let Some(file_list) = &args.files {
         let mut existing: Vec<PathBuf> = Vec::with_capacity(file_list.len());
         for file in file_list {
-            match file.as_path().try_exists() {
-                Ok(exists) => if exists {
-                    existing.push(file.clone());
-                } else {
-                    eprintln!("File {} doesn't exist", file.display());
-                }
+            match &file.try_exists() {
+                Ok(exists) if *exists => existing.push(file.clone()),
+                Ok(_) => eprintln!("File {} doesn't exist", file.display()),
                 Err(e) => {
                     eprintln!("Couldn't detect if {} exists: {e}", file.display());
                 }
@@ -67,6 +63,7 @@ fn get_paths(args: &Args) -> Result<Vec<PathBuf>> {
     } else {
         let read_dir = std::fs::read_dir(&args.source_directory)?;
 
+        // Use size_hint to try to preallocate space, uses upper bound if possible, otherwise uses lower bound
         let size_hint = match read_dir.size_hint() {
             (_, Some(upper_bound)) => upper_bound,
             (lower_bound, None) => lower_bound,
