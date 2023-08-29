@@ -1,3 +1,4 @@
 /.vscode
 /target
 /test
+prefix_strip

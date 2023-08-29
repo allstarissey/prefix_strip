@@ -1,7 +1,8 @@
-use std::path::PathBuf;
+use std::{path::PathBuf, ffi::OsString};
 use clap::Parser;
+use colored::Colorize;
 
-type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
+type GenericResult<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 
 #[derive(Debug)]
@@ -29,37 +30,121 @@ struct Args {
     files: Option<Vec<PathBuf>>,
 
     #[arg(short = 'd', long, help = "Include directories to be stripped")]
-    include_directories: bool
+    include_directories: bool,
+
+    #[arg(short = 'y', long, help = "Skips confirmation prompt")]
+    skip_confirmation: bool,
+
+    #[arg(short, long, help = "Replaces prefix, rather than deleting it. Can be used with empty prefix input to add a prefix")]
+    replace: Option<String>,
+}
+
+
+#[derive(Clone)]
+struct NamedPath {
+    pathbuf: PathBuf,
+    name: String,
+}
+
+impl NamedPath {
+    fn from_pathbuf(pathbuf: PathBuf) -> Option<Self> {
+        let name = pathbuf.file_name()?
+            .to_string_lossy()
+            .to_string();
+
+        Some(Self { pathbuf, name })
+    }
+
+    fn pathbuf(&self) -> &PathBuf {
+        &self.pathbuf
+    }
+
+    fn name(&self) -> &str {
+        &self.name
+    }
 }
 
 
 fn main() {
     let args = Args::parse();
 
-    let paths = match get_paths(&args) {
-        Ok(p) => p,
+    let mut named_paths = match get_named_paths(&args) {
+        Ok(n_p) => n_p,
         Err(e) => {
             eprintln!("Error getting files: {e}");
             return;
         }
     };
+
+    let prefix: String = match args.prefix {
+        Some(p) => match vet_named_paths(&p, &mut named_paths) {
+            Ok(vetted) => {
+                named_paths = vetted;
+                p
+            }
+            Err(e) => {
+                eprintln!("{e}");
+                return;
+            }
+        }
+        None => match try_find_prefix(&named_paths) {
+            Ok(p_opt) => match p_opt {
+                Some(p) => p,
+                None => {
+                    eprintln!("Couldn't guess a prefix!");
+                    return;
+                }
+            }
+            Err(e) => {
+                eprintln!("Error guessing prefix: {e}");
+                return;
+            }
+        }
+    };
+
+    let prefix_len = prefix.len();
+
+    let new_named_paths: Vec<NamedPath> = get_new_named_paths(&named_paths, &args.replace, &prefix);
+
+    println!("Found prefix: {}", prefix.bold());
+    println!("\nAffected files:");
+    for named_path in named_paths.iter() {
+        let (prefix_name, remainder_name) = named_path.name().split_at(prefix_len);
+
+        println!("{}{remainder_name}", prefix_name.bold().blue());
+    }
+
+    println!("\nFiles after changes:");
+    for new_named_path in new_named_paths.iter() {
+        let new_prefix_len = match &args.replace {
+            Some(n_p) => n_p.len(),
+            None => 0,
+        };
+
+        let (prefix_name, remainder_name) = new_named_path.name().split_at(new_prefix_len);
+
+        println!("{}{remainder_name}", prefix_name.bold().blue());
+    }
 }
 
-fn get_paths(args: &Args) -> Result<Vec<PathBuf>> {
-    let list: Vec<PathBuf>;
+fn get_named_paths(args: &Args) -> GenericResult<Vec<NamedPath>> {
+    let named_paths: Vec<NamedPath>;
     if let Some(file_list) = &args.files {
-        let mut existing: Vec<PathBuf> = Vec::with_capacity(file_list.len());
+        let mut existing: Vec<NamedPath> = Vec::with_capacity(file_list.len());
         for file in file_list {
             match &file.try_exists() {
-                Ok(exists) if *exists => existing.push(file.clone()),
-                Ok(_) => eprintln!("File {} doesn't exist", file.display()),
+                Ok(exists) if *exists => match NamedPath::from_pathbuf(file.clone()) {
+                    Some(f) => existing.push(f),
+                    None => eprintln!("Couldn't get filename for {}", &file.display()),
+                },
+                Ok(_) => eprintln!("File {} doesn't exist", &file.display()),
                 Err(e) => {
                     eprintln!("Couldn't detect if {} exists: {e}", file.display());
                 }
             }
         }
 
-        list = existing;
+        named_paths = existing;
     } else {
         let read_dir = std::fs::read_dir(&args.source_directory)?;
 
@@ -68,7 +153,7 @@ fn get_paths(args: &Args) -> Result<Vec<PathBuf>> {
             (_, Some(upper_bound)) => upper_bound,
             (lower_bound, None) => lower_bound,
         };
-        let mut paths: Vec<PathBuf> = Vec::with_capacity(size_hint);
+        let mut named_path_list: Vec<NamedPath> = Vec::with_capacity(size_hint);
 
         for entry in read_dir {
             if let Err(e) = entry {
@@ -76,26 +161,85 @@ fn get_paths(args: &Args) -> Result<Vec<PathBuf>> {
                 continue;
             }
 
-            paths.push(entry.unwrap().path());
+            let path = entry.unwrap().path();
+            match NamedPath::from_pathbuf(path.clone()) {
+                Some(p) => named_path_list.push(p),
+                None => {
+                    eprintln!("Couldn't get filename for {}", &path.display());
+                    continue;
+                }
+            }
         }
 
-        list = Vec::from(paths)
+        named_paths = Vec::from(named_path_list)
     }
 
-    let final_list: Vec<PathBuf> = list.iter() // I wanna use drain_filter so bad, but the stable branch beckons.
-        .filter(|pathbuf| {
-            if pathbuf.is_dir() && !args.include_directories {
-                return false;
-            }
-
-            true
-        })
-        .cloned()
-        .collect();
-
-    if final_list.is_empty() {
+    if named_paths.is_empty() {
         return Err(Box::new(NoFilesRemaining))
     }
 
-    Ok(final_list)
+    Ok(named_paths)
+}
+
+fn try_find_prefix(named_paths: &Vec<NamedPath>) -> Result<Option<String>, NoFilesRemaining> {
+    let names: Vec<&str> = named_paths.iter().map(|p| p.name()).collect();
+
+    let max_length = names.iter()
+        .min_by(|&&a, &&b| a.len().cmp(&b.len()))
+        .unwrap()
+        .len();
+
+    let mut longest_common_prefix: String = String::with_capacity(max_length);
+
+    for index in 0..max_length {
+        let first = names[0].as_bytes()
+            .get(index)
+            .unwrap()
+            .to_owned();
+
+        if !names.iter().all(|&n| *n.as_bytes().get(index).unwrap() == first) {
+            break
+        }
+
+        longest_common_prefix.push(first as char)
+    }
+
+    if longest_common_prefix.is_empty() {
+        return Ok(None)
+    }
+
+    Ok(Some(longest_common_prefix))
+}
+
+fn vet_named_paths(prefix: &String, named_paths: &Vec<NamedPath>) -> Result<Vec<NamedPath>, NoFilesRemaining> {
+    let vetted: Vec<NamedPath> = named_paths.into_iter()
+        .filter(|n_p| n_p.name().starts_with(prefix))
+        .cloned()
+        .collect();
+
+    if vetted.is_empty() {
+        return Err(NoFilesRemaining)
+    }
+
+    Ok(vetted)
+}
+
+fn get_new_named_paths(named_paths: &Vec<NamedPath>, replace: &Option<String>, prefix: &str) -> Vec<NamedPath> {
+    let mut new_paths: Vec<NamedPath> = Vec::with_capacity(named_paths.len());
+
+    let replace_str = match replace {
+        Some(r) => r.to_owned(),
+        None => String::new(),
+    };
+
+    for named_path in named_paths.iter() {
+        let mut new_path = named_path.pathbuf().clone();
+        let new_name = named_path.name().replace(prefix, &replace_str);
+
+        new_path.set_file_name(OsString::from(new_name));
+
+        new_paths.push(NamedPath::from_pathbuf(new_path).unwrap())
+    }
+
+    new_paths
 }
