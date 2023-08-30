@@ -1,4 +1,4 @@
-use std::{path::PathBuf, ffi::OsString};
+use std::{path::PathBuf, ffi::OsString, io::{stdin, stdout, Write}};
 use clap::Parser;
 use colored::Colorize;
 
@@ -77,7 +77,7 @@ fn main() {
     };
 
     let prefix: String = match args.prefix {
-        Some(p) => match vet_named_paths(&p, &mut named_paths) {
+        Some(p) => match vet_named_paths(&p, named_paths) {
             Ok(vetted) => {
                 named_paths = vetted;
                 p
@@ -125,6 +125,33 @@ fn main() {
 
         println!("{}{remainder_name}", prefix_name.bold().blue());
     }
+
+    println!();
+    if !&args.skip_confirmation {
+        loop {
+            print!("Rename files? [y/N]: ");
+            stdout().flush().unwrap();
+
+            let mut response = String::new();
+            if let Err(e) = stdin().read_line(&mut response) {
+                eprintln!("Failed to read input: {e}");
+                return
+            }
+
+            match response.trim() {
+                "y" | "Y" => break,
+                "n" | "N" | "" => return,
+                _ => continue
+            }
+        }
+    }
+
+    for (old_path, new_path) in named_paths.into_iter().zip(new_named_paths.into_iter()) {
+        if let Err(e) = std::fs::rename(old_path.pathbuf(), new_path.pathbuf()) {
+            eprintln!("Failed to rename {}: {e}", old_path.pathbuf().display());
+            continue
+        }
+    }
 }
 
 fn get_named_paths(args: &Args) -> GenericResult<Vec<NamedPath>> {
@@ -171,7 +198,7 @@ fn get_named_paths(args: &Args) -> GenericResult<Vec<NamedPath>> {
             }
         }
 
-        named_paths = Vec::from(named_path_list)
+        named_paths = named_path_list
     }
 
     if named_paths.is_empty() {
@@ -181,7 +208,7 @@ fn get_named_paths(args: &Args) -> GenericResult<Vec<NamedPath>> {
     Ok(named_paths)
 }
 
-fn try_find_prefix(named_paths: &Vec<NamedPath>) -> Result<Option<String>, NoFilesRemaining> {
+fn try_find_prefix(named_paths: &[NamedPath]) -> Result<Option<String>, NoFilesRemaining> {
     let names: Vec<&str> = named_paths.iter().map(|p| p.name()).collect();
 
     let max_length = names.iter()
@@ -211,10 +238,9 @@ fn try_find_prefix(named_paths: &Vec<NamedPath>) -> Result<Option<String>, NoFil
     Ok(Some(longest_common_prefix))
 }
 
-fn vet_named_paths(prefix: &String, named_paths: &Vec<NamedPath>) -> Result<Vec<NamedPath>, NoFilesRemaining> {
+fn vet_named_paths(prefix: &String, named_paths: Vec<NamedPath>) -> Result<Vec<NamedPath>, NoFilesRemaining> {
     let vetted: Vec<NamedPath> = named_paths.into_iter()
         .filter(|n_p| n_p.name().starts_with(prefix))
-        .cloned()
         .collect();
 
     if vetted.is_empty() {
@@ -234,7 +260,7 @@ fn get_new_named_paths(named_paths: &Vec<NamedPath>, replace: &Option<String>, p
 
     for named_path in named_paths.iter() {
         let mut new_path = named_path.pathbuf().clone();
-        let new_name = named_path.name().replace(prefix, &replace_str);
+        let new_name = named_path.name().replacen(prefix, &replace_str, 1);
 
         new_path.set_file_name(OsString::from(new_name));
 
