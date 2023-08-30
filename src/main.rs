@@ -1,9 +1,12 @@
-use std::{path::PathBuf, ffi::OsString, io::{stdin, stdout, Write}};
 use clap::Parser;
 use colored::Colorize;
+use std::{
+    ffi::OsString,
+    io::{stdin, stdout, Write},
+    path::PathBuf,
+};
 
 type GenericResult<T> = std::result::Result<T, Box<dyn std::error::Error>>;
-
 
 #[derive(Debug)]
 struct NoFilesRemaining;
@@ -16,17 +19,25 @@ impl std::fmt::Display for NoFilesRemaining {
 
 impl std::error::Error for NoFilesRemaining {}
 
-
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
 struct Args {
     #[arg(short, long, help = "Manually sets prefix")]
     prefix: Option<String>,
 
-    #[arg(short, long, help = "Use all files in specified directory", default_value = "./")]
+    #[arg(
+        short,
+        long,
+        help = "Use all files in specified directory",
+        default_value = "./"
+    )]
     source_directory: PathBuf,
 
-    #[arg(last = true, conflicts_with = "source_directory", help = "Explicit list of files to be changed, mutually exclusive with -d")]
+    #[arg(
+        last = true,
+        conflicts_with = "source_directory",
+        help = "Explicit list of files to be changed, mutually exclusive with -d"
+    )]
     files: Option<Vec<PathBuf>>,
 
     #[arg(short = 'd', long, help = "Include directories to be stripped")]
@@ -35,10 +46,13 @@ struct Args {
     #[arg(short = 'y', long, help = "Skips confirmation prompt")]
     skip_confirmation: bool,
 
-    #[arg(short, long, help = "Replaces prefix, rather than deleting it. Can be used with empty prefix input to add a prefix")]
+    #[arg(
+        short,
+        long,
+        help = "Replaces prefix, rather than deleting it. Can be used with empty prefix input to add a prefix"
+    )]
     replace: Option<String>,
 }
-
 
 #[derive(Clone)]
 struct NamedPath {
@@ -48,9 +62,7 @@ struct NamedPath {
 
 impl NamedPath {
     fn from_pathbuf(pathbuf: PathBuf) -> Option<Self> {
-        let name = pathbuf.file_name()?
-            .to_string_lossy()
-            .to_string();
+        let name = pathbuf.file_name()?.to_string_lossy().to_string();
 
         Some(Self { pathbuf, name })
     }
@@ -63,7 +75,6 @@ impl NamedPath {
         &self.name
     }
 }
-
 
 fn main() {
     let args = Args::parse();
@@ -86,7 +97,7 @@ fn main() {
                 eprintln!("{e}");
                 return;
             }
-        }
+        },
         None => match try_find_prefix(&named_paths) {
             Ok(p_opt) => match p_opt {
                 Some(p) => p,
@@ -94,12 +105,12 @@ fn main() {
                     eprintln!("Couldn't guess a prefix!");
                     return;
                 }
-            }
+            },
             Err(e) => {
                 eprintln!("Error guessing prefix: {e}");
                 return;
             }
-        }
+        },
     };
 
     let prefix_len = prefix.len();
@@ -135,13 +146,13 @@ fn main() {
             let mut response = String::new();
             if let Err(e) = stdin().read_line(&mut response) {
                 eprintln!("Failed to read input: {e}");
-                return
+                return;
             }
 
             match response.trim() {
                 "y" | "Y" => break,
                 "n" | "N" | "" => return,
-                _ => continue
+                _ => continue,
             }
         }
     }
@@ -149,7 +160,7 @@ fn main() {
     for (old_path, new_path) in named_paths.into_iter().zip(new_named_paths.into_iter()) {
         if let Err(e) = std::fs::rename(old_path.pathbuf(), new_path.pathbuf()) {
             eprintln!("Failed to rename {}: {e}", old_path.pathbuf().display());
-            continue
+            continue;
         }
     }
 }
@@ -202,7 +213,7 @@ fn get_named_paths(args: &Args) -> GenericResult<Vec<NamedPath>> {
     }
 
     if named_paths.is_empty() {
-        return Err(Box::new(NoFilesRemaining))
+        return Err(Box::new(NoFilesRemaining));
     }
 
     Ok(named_paths)
@@ -211,7 +222,8 @@ fn get_named_paths(args: &Args) -> GenericResult<Vec<NamedPath>> {
 fn try_find_prefix(named_paths: &[NamedPath]) -> Result<Option<String>, NoFilesRemaining> {
     let names: Vec<&str> = named_paths.iter().map(|p| p.name()).collect();
 
-    let max_length = names.iter()
+    let max_length = names
+        .iter()
         .min_by(|&&a, &&b| a.len().cmp(&b.len()))
         .unwrap()
         .len();
@@ -219,38 +231,46 @@ fn try_find_prefix(named_paths: &[NamedPath]) -> Result<Option<String>, NoFilesR
     let mut longest_common_prefix: String = String::with_capacity(max_length);
 
     for index in 0..max_length {
-        let first = names[0].as_bytes()
-            .get(index)
-            .unwrap()
-            .to_owned();
+        let first = names[0].as_bytes().get(index).unwrap().to_owned();
 
-        if !names.iter().all(|&n| *n.as_bytes().get(index).unwrap() == first) {
-            break
+        if !names
+            .iter()
+            .all(|&n| *n.as_bytes().get(index).unwrap() == first)
+        {
+            break;
         }
 
         longest_common_prefix.push(first as char)
     }
 
     if longest_common_prefix.is_empty() {
-        return Ok(None)
+        return Ok(None);
     }
 
     Ok(Some(longest_common_prefix))
 }
 
-fn vet_named_paths(prefix: &String, named_paths: Vec<NamedPath>) -> Result<Vec<NamedPath>, NoFilesRemaining> {
-    let vetted: Vec<NamedPath> = named_paths.into_iter()
+fn vet_named_paths(
+    prefix: &String,
+    named_paths: Vec<NamedPath>,
+) -> Result<Vec<NamedPath>, NoFilesRemaining> {
+    let vetted: Vec<NamedPath> = named_paths
+        .into_iter()
         .filter(|n_p| n_p.name().starts_with(prefix))
         .collect();
 
     if vetted.is_empty() {
-        return Err(NoFilesRemaining)
+        return Err(NoFilesRemaining);
     }
 
     Ok(vetted)
 }
 
-fn get_new_named_paths(named_paths: &Vec<NamedPath>, replace: &Option<String>, prefix: &str) -> Vec<NamedPath> {
+fn get_new_named_paths(
+    named_paths: &Vec<NamedPath>,
+    replace: &Option<String>,
+    prefix: &str,
+) -> Vec<NamedPath> {
     let mut new_paths: Vec<NamedPath> = Vec::with_capacity(named_paths.len());
 
     let replace_str = match replace {
